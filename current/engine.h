@@ -1060,8 +1060,7 @@ private:
                 if (d > max_r) max_r = d;
             }
             int cd = max_r + 3;
-            std::uniform_int_distribution<int> dist(0, 5);
-            int di = dist(_rng);
+            int di = static_cast<int>(_hash % 6);
             int col_q = cq + COLONY_DQ[di] * cd;
             int col_r = cr + COLONY_DR[di] * cd;
             if (std::abs(col_q) < OFF && std::abs(col_r) < OFF &&

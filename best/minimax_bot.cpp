@@ -94,6 +94,9 @@ PYBIND11_MODULE(minimax_cpp, m) {
             [](MinimaxBotWrapper& b, double v) { b.engine.last_score = v; })
         .def_property_readonly("pair_moves",
             [](MinimaxBotWrapper& b) { return b.engine.pair_moves; })
+        .def_property("max_depth",
+            [](MinimaxBotWrapper& b) { return b.engine.max_depth; },
+            [](MinimaxBotWrapper& b, int v) { b.engine.max_depth = v; })
         .def_property("_nodes",
             [](MinimaxBotWrapper& b) { return b.engine._nodes; },
             [](MinimaxBotWrapper& b, int v) { b.engine._nodes = v; });
