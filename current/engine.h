@@ -48,7 +48,7 @@ using flat_set = ankerl::unordered_dense::set<K, H>;
 //  Constants
 // ═══════════════════════════════════════════════════════════════════════
 static constexpr int    CANDIDATE_CAP      = 15; // 11
-static constexpr int    ROOT_CANDIDATE_CAP = 1; // 13
+static constexpr int    ROOT_CANDIDATE_CAP = 20; // 13
 static constexpr int    PAIR_SUM_CAP       = 14;
 static constexpr int    NEIGHBOR_DIST      = 2;
 static constexpr double DELTA_WEIGHT       = 15; // 1.5
