@@ -79,7 +79,7 @@ class BotRunner:
     def get_move(self, game):
         if self._bot is not None and hasattr(self._bot, 'time_limit'):
             self._bot.time_limit = self.time_limit
-        deadline = time.time() + self.time_limit * game.moves_left_in_turn
+        deadline = time.time() + self.time_limit
         result = self._get_move(game)
         if hasattr(result, '__next__'):
             best = None
@@ -165,12 +165,13 @@ def play_game(bot_a, bot_b, win_length=6, violations=None, max_moves=None):
         if not moves:
             return (Player.B if player == Player.A else Player.A,
                     depths[Player.A], depths[Player.B],
-                    tuple(times[Player.A]), tuple(times[Player.B]))
+                    tuple(times[Player.A]), tuple(times[Player.B]),
+                    total_moves)
 
         num_moves = len(moves)
         times[player][0] += elapsed
-        times[player][1] += num_moves
-        if elapsed > bot.time_limit * num_moves * GRACE_FACTOR:
+        times[player][1] += 1
+        if elapsed > bot.time_limit * GRACE_FACTOR:
             if violations is not None:
                 violations[bot] = violations.get(bot, 0) + 1
                 if violations[bot] >= MAX_VIOLATIONS_PER_GAME:
@@ -179,16 +180,19 @@ def play_game(bot_a, bot_b, win_length=6, violations=None, max_moves=None):
         total_moves += num_moves
         if total_moves >= max_moves:
             return (Player.NONE, depths[Player.A], depths[Player.B],
-                    tuple(times[Player.A]), tuple(times[Player.B]))
+                    tuple(times[Player.A]), tuple(times[Player.B]),
+                    total_moves)
 
         for q, r in moves:
             if game.game_over or not game.make_move(q, r):
                 return (Player.B if player == Player.A else Player.A,
                         depths[Player.A], depths[Player.B],
-                        tuple(times[Player.A]), tuple(times[Player.B]))
+                        tuple(times[Player.A]), tuple(times[Player.B]),
+                        total_moves)
 
     return (game.winner, depths[Player.A], depths[Player.B],
-            tuple(times[Player.A]), tuple(times[Player.B]))
+            tuple(times[Player.A]), tuple(times[Player.B]),
+            total_moves)
 
 
 # ── Worker for same-module modes (random / self-play) ──
@@ -224,8 +228,9 @@ def _play_one_same(args):
 
     violations = {}
     exceeded = False
+    mc = 0
     try:
-        winner, d_a, d_b, t_a, t_b = play_game(
+        winner, d_a, d_b, t_a, t_b, mc = play_game(
             seat_a, seat_b, win_length, violations, max_moves)
     except TimeLimitExceeded:
         exceeded = True
@@ -235,7 +240,7 @@ def _play_one_same(args):
 
     return (winner.value, swapped, dict(d_a), dict(d_b),
             violations.get(seat_a, 0), violations.get(seat_b, 0),
-            exceeded, t_a, t_b, t_a[1] + t_b[1])
+            exceeded, t_a, t_b, mc)
 
 
 # ── Bot server subprocess for current vs best ──
@@ -365,10 +370,10 @@ def _play_one_cross(root_dir, python_exe, time_limit, game_idx,
             nm = len(moves)
             t_arr = ta if p == Player.A else tb
             t_arr[0] += elapsed
-            t_arr[1] += nm
+            t_arr[1] += 1
             (da if p == Player.A else db)[depth] += nm
 
-            if elapsed > time_limit * nm * GRACE_FACTOR:
+            if elapsed > time_limit * GRACE_FACTOR:
                 seat = "a" if p == Player.A else "b"
                 violations[seat] = violations.get(seat, 0) + 1
                 if violations[seat] >= MAX_VIOLATIONS_PER_GAME:
@@ -521,7 +526,7 @@ def evaluate(num_games=20, win_length=6, time_limit=0.1, use_tqdm=True,
 
     for name, bt in [(name_a, bot_a_time), (name_b, bot_b_time)]:
         if bt[1] > 0:
-            print(f"  {name} avg move time: {1000*bt[0]/bt[1]:.0f}ms ({bt[1]} moves)")
+            print(f"  {name} avg turn time: {1000*bt[0]/bt[1]:.0f}ms ({bt[1]} turns)")
 
     if game_lengths:
         print(f"\n  Game length: avg {sum(game_lengths)/len(game_lengths):.1f} moves, "
@@ -540,7 +545,7 @@ if __name__ == "__main__":
     parser.add_argument("-n", "--num-games", type=int, default=20,
                         help="Number of games (default: 20)")
     parser.add_argument("-t", "--time-limit", type=float, default=0.1,
-                        help="Time limit per move in seconds (default: 0.1)")
+                        help="Time limit per turn in seconds (default: 0.1)")
     parser.add_argument("--random", action="store_true",
                         help="Play current against built-in random bot")
     parser.add_argument("--self-play", action="store_true",
