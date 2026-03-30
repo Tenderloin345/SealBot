@@ -1,7 +1,11 @@
 .venv/
 build/
+_profile_build/
 *.so
 *.pyd
 *.egg-info
 __pycache__/
 positions/
+experiments/cma/output/
+CLAUDE.md
+scratch.txt

@@ -131,6 +131,7 @@ struct UndoStep
     int8_t player;
 };
 
+<<<<<<< HEAD
 struct TTEntry
 {
     int depth;
@@ -138,6 +139,15 @@ struct TTEntry
     int8_t flag;
     Turn move;
     bool has_move;
+=======
+struct TTEntry {
+    uint32_t key = 0;   // upper 32 bits of hash (verification)
+    int16_t  depth = 0;
+    int8_t   flag  = 0; // TT_EXACT / TT_LOWER / TT_UPPER
+    double   score = 0;
+    Turn     move  = {};
+    bool     has_move = false;
+>>>>>>> 6402fb8e6c3093d72b970822bdf61c7e000deee9
 };
 
 struct TimeUp
@@ -308,7 +318,29 @@ static void ensure_tables()
 namespace opt
 {
 
+<<<<<<< HEAD
     class MinimaxBot
+=======
+class MinimaxBot {
+public:
+    // ── Public attributes ──
+    bool   pair_moves = true;
+    bool   no_cand_cap = false;
+    double time_limit;
+    int    last_depth  = 0;
+    int    _nodes      = 0;
+    double last_score  = 0;
+    double last_ebf    = 0;
+    int    max_depth   = 200;
+
+    // ── Constructors ──
+    MinimaxBot() : time_limit(0.05), _rng(std::random_device{}()),
+                   _tt(1 << 20), _tt_mask((1 << 20) - 1) { ensure_tables(); }
+
+    explicit MinimaxBot(double tl)
+        : time_limit(tl), _rng(std::random_device{}()),
+          _tt(1 << 20), _tt_mask((1 << 20) - 1)
+>>>>>>> 6402fb8e6c3093d72b970822bdf61c7e000deee9
     {
     public:
         // ── Public attributes ──
@@ -324,8 +356,112 @@ namespace opt
         // ── Constructors ──
         MinimaxBot() : time_limit(0.05), _rng(std::random_device{}()) { ensure_tables(); }
 
+<<<<<<< HEAD
         explicit MinimaxBot(double tl)
             : time_limit(tl), _rng(std::random_device{}())
+=======
+    void load_patterns(const std::vector<double>& values, int eval_length,
+                       const std::string& path = "") {
+        load_patterns(values.data(), static_cast<int>(values.size()),
+                      eval_length, path);
+    }
+
+    // ── Serialisation helpers ──
+    EngineState get_state() const {
+        return {time_limit, _pv, _eval_length, _pattern_path_str};
+    }
+
+    void set_state(const EngineState& es) {
+        ensure_tables();
+        time_limit = es.time_limit;
+        _pv = es.pv;
+        _eval_length = es.eval_length;
+        _pattern_path_str = es.pattern_path_str;
+        _rng = std::mt19937(std::random_device{}());
+        _build_eval_tables();
+    }
+
+    // ── Main entry point ──
+    MoveResult get_move(const GameState& gs) {
+        if (gs.cells.empty())
+            return {0, 0, 0, 0, 1};
+
+        // ── Clear arrays ──
+        std::memset(_board, 0, sizeof(_board));
+        std::memset(_wc, 0, sizeof(_wc));
+        std::memset(_wp, 0, sizeof(_wp));
+        std::memset(_cand_rc, 0, sizeof(_cand_rc));
+        _board_cells.clear();
+        _hot_a.clear();
+        _hot_b.clear();
+        _cand_set.clear();
+        _rc_stack.clear();
+
+        // ── Populate board from GameState ──
+        for (const auto& cell : gs.cells) {
+            _board[cell.q + OFF][cell.r + OFF] = cell.player;
+            _board_cells.push_back(pack(cell.q, cell.r));
+        }
+
+        _cur_player = gs.cur_player;
+        _moves_left = gs.moves_left;
+        _move_count = gs.move_count;
+        _winner     = P_NONE;
+        _game_over  = false;
+
+        // ── Deadline ──
+        _deadline = Clock::now() + std::chrono::microseconds(
+                        static_cast<int64_t>(time_limit * 1000000.0));
+
+        // ── Player tracking ──
+        if (_cur_player != _player) {
+            _history.clear();
+            std::memset(_killers, 0, sizeof(_killers));
+        }
+        _player    = _cur_player;
+        _nodes     = 0;
+        _ply       = 0;
+        last_depth = 0;
+        last_score = 0;
+        last_ebf   = 0;
+
+        // ── Zobrist ──
+        _hash = 0;
+        for (Coord c : _board_cells)
+            _hash ^= get_zobrist(pack_q(c), pack_r(c),
+                                  _board[pack_q(c) + OFF][pack_r(c) + OFF]);
+
+        // ── Cell value mapping ──
+        if (_player == P_A) { _cell_a = 1; _cell_b = 2; }
+        else                { _cell_a = 2; _cell_b = 1; }
+
+        // ── Init 6-cell windows ──
+        for (Coord c : _board_cells) {
+            int bq = pack_q(c), br = pack_r(c);
+            int bqi = bq + OFF, bri = br + OFF;
+            for (const auto& wo : g_win_offsets) {
+                int sqi = bqi - wo.oq, sri = bri - wo.or_;
+                auto& counts = _wc[wo.d_idx][sqi][sri];
+                if (counts.first != 0 || counts.second != 0) continue;
+                int d = wo.d_idx;
+                int sq = bq - wo.oq, sr = br - wo.or_;
+                int ac = 0, bc = 0;
+                for (int j = 0; j < WIN_LENGTH; j++) {
+                    int8_t v = _board[sq + j * DIR_Q[d] + OFF][sr + j * DIR_R[d] + OFF];
+                    if (v == P_A) ac++;
+                    else if (v == P_B) bc++;
+                }
+                if (ac || bc) {
+                    counts = {static_cast<int8_t>(ac), static_cast<int8_t>(bc)};
+                    if (ac >= 4) _hot_a.insert(wo.d_idx, sqi, sri);
+                    if (bc >= 4) _hot_b.insert(wo.d_idx, sqi, sri);
+                }
+            }
+        }
+
+        // ── Init N-cell eval windows ──
+        _eval_score = 0.0;
+>>>>>>> 6402fb8e6c3093d72b970822bdf61c7e000deee9
         {
             ensure_tables();
         }
@@ -1021,6 +1157,7 @@ namespace opt
                 }
             }
 
+<<<<<<< HEAD
             // ── N-cell eval windows ──
             const double *pv = _pv.data();
             for (const auto &eo : _eval_offsets)
@@ -1031,6 +1168,27 @@ namespace opt
                 int new_pi = old_pi - cell_val * _pow3[eo.k];
                 _eval_score += pv[new_pi] - pv[old_pi];
                 slot = new_pi;
+=======
+            // 2. TT entry with a best move
+            TTEntry* tte = _tt_probe(ttk);
+            if (tte && tte->has_move) {
+                double sc = _tt_adjust_load(tte->score);
+                if (std::abs(sc) < WIN_THRESHOLD) break;
+                Turn best_turn = tte->move;
+                undo_stack.push_back({});
+                auto& back = undo_stack.back();
+                back.second = _make_turn(best_turn, back.first);
+                _ply++;
+                PVStep step;
+                step.player = player;
+                for (int i = 0; i < back.second; i++) {
+                    Coord c = back.first[i].cell;
+                    step.moves.push_back({pack_q(c), pack_r(c)});
+                }
+                pv.push_back(std::move(step));
+                if (_game_over) break;
+                continue;
+>>>>>>> 6402fb8e6c3093d72b970822bdf61c7e000deee9
             }
 
             // ── Candidates ──
@@ -1154,7 +1312,385 @@ namespace opt
                 int opp_count = (p_idx == 0) ? counts.second : counts.first;
                 if (opp_count != 0)
                     continue;
+<<<<<<< HEAD
 
+=======
+                }
+                // Check TT for score after this response
+                TTEntry* tt2 = _tt_probe(_tt_key());
+                double surv;
+                if (tt2) {
+                    surv = _tt_adjust_load(tt2->score);
+                } else {
+                    // No TT — use instant win check as proxy
+                    auto [ofw, _owt] = _find_instant_win(opponent);
+                    surv = ofw ? (maximizing ? -WIN_SCORE + _ply : WIN_SCORE - _ply) : 0.0;
+                }
+                _ply--;
+                _undo_turn(tmp, n);
+                // Defender wants to minimize (if opponent is maximizer) or maximize
+                bool better = maximizing ? (surv > best_surv) : (surv < best_surv);
+                if (!found_resp || better) {
+                    best_response = turn;
+                    best_surv = surv;
+                    found_resp = true;
+                }
+            }
+            if (!found_resp) break;
+
+            undo_stack.push_back({});
+            auto& back = undo_stack.back();
+            back.second = _make_turn(best_response, back.first);
+            _ply++;
+            PVStep step;
+            step.player = player;
+            for (int i = 0; i < back.second; i++) {
+                Coord c = back.first[i].cell;
+                step.moves.push_back({pack_q(c), pack_r(c)});
+            }
+            pv.push_back(std::move(step));
+            if (_game_over) break;
+        }
+
+        // Undo everything
+        for (auto it2 = undo_stack.rbegin(); it2 != undo_stack.rend(); ++it2) {
+            _ply--;
+            _undo_turn(it2->first, it2->second);
+        }
+
+        return pv;
+    }
+
+private:
+    // ── Pattern data ──
+    std::vector<double>  _pv;
+    int                  _eval_length = 6;
+    std::vector<EvalOff> _eval_offsets;
+    std::vector<int>     _pow3;
+    std::string          _pattern_path_str;
+
+    // ── Board state (flat arrays) ──
+    int8_t _board[ARR][ARR] = {};
+    std::vector<Coord> _board_cells;
+
+    int8_t _cur_player  = P_A;
+    int8_t _moves_left  = 1;
+    int8_t _winner      = P_NONE;
+    bool   _game_over   = false;
+    int    _move_count  = 0;
+
+    // ── 6-cell window counts ──
+    std::pair<int8_t,int8_t> _wc[3][ARR][ARR] = {};
+    HotSet _hot_a, _hot_b;
+
+    // ── N-cell eval window patterns ──
+    int _wp[3][ARR][ARR] = {};
+
+    // ── Candidates ──
+    int8_t  _cand_rc[ARR][ARR] = {};
+    CandSet _cand_set;
+    std::vector<int> _rc_stack;
+
+    // ── Search state ──
+    using Clock = std::chrono::steady_clock;
+    Clock::time_point _deadline;
+    uint64_t _hash      = 0;
+    int8_t   _player    = P_A;
+    int8_t   _cell_a    = 1;
+    int8_t   _cell_b    = 2;
+    double   _eval_score = 0;
+    int      _ply       = 0;  // distance from root (for mate-distance scoring)
+
+    // Mate-distance TT adjustment: store position-relative win distances
+    double _tt_adjust_store(double score) const {
+        if (score >  WIN_THRESHOLD) return score + _ply;
+        if (score < -WIN_THRESHOLD) return score - _ply;
+        return score;
+    }
+    double _tt_adjust_load(double score) const {
+        if (score >  WIN_THRESHOLD) return score - _ply;
+        if (score < -WIN_THRESHOLD) return score + _ply;
+        return score;
+    }
+
+    // ── Transposition table (fixed-size, direct-mapped, always-overwrite) ──
+    std::vector<TTEntry> _tt;
+    uint64_t _tt_mask = 0;
+
+    TTEntry* _tt_probe(uint64_t full_key) {
+        uint32_t verify = static_cast<uint32_t>(full_key >> 32);
+        auto& e = _tt[static_cast<size_t>(full_key) & _tt_mask];
+        return (e.key == verify) ? &e : nullptr;
+    }
+
+    void _tt_store_entry(uint64_t full_key, int depth, double score,
+                         int8_t flag, const Turn& move, bool has_move) {
+        auto& e    = _tt[static_cast<size_t>(full_key) & _tt_mask];
+        uint32_t verify = static_cast<uint32_t>(full_key >> 32);
+        // Depth-preferred replacement: keep deeper entries for the same position;
+        // always replace if the slot holds a different position.
+        if (e.key != verify || depth >= e.depth) {
+            e.key      = verify;
+            e.depth    = static_cast<int16_t>(depth);
+            e.score    = score;
+            e.flag     = flag;
+            e.move     = move;
+            e.has_move = has_move;
+        }
+    }
+
+    // ── History table ──
+    flat_map<Coord, int>        _history;
+
+    // ── Killer moves (2 slots per ply) ──
+    static constexpr int MAX_KILLERS_PLY = 64;
+    Turn _killers[MAX_KILLERS_PLY][2] = {};
+
+    void _store_killer(int ply, const Turn& t) {
+        if (ply >= MAX_KILLERS_PLY) return;
+        if (t == _killers[ply][0]) return;
+        _killers[ply][1] = _killers[ply][0];
+        _killers[ply][0] = t;
+    }
+
+    // ── RNG ──
+    std::mt19937 _rng;
+
+    // ── Saved state for TimeUp rollback ──
+    struct SavedArrays {
+        int8_t board[ARR][ARR];
+        std::pair<int8_t,int8_t> wc[3][ARR][ARR];
+        int wp[3][ARR][ARR];
+        int8_t cand_rc[ARR][ARR];
+        bool cand_bits[ARR][ARR];
+        std::vector<Coord> cand_vec;
+        bool hot_a_bits[3][ARR][ARR];
+        std::vector<HotEntry> hot_a_vec;
+        bool hot_b_bits[3][ARR][ARR];
+        std::vector<HotEntry> hot_b_vec;
+        std::vector<Coord> board_cells;
+    };
+    std::unique_ptr<SavedArrays> _saved;
+
+    // ────────────────────────────────────────────────────────────────
+    //  Pattern table construction
+    // ────────────────────────────────────────────────────────────────
+    void _build_eval_tables() {
+        _eval_offsets.clear();
+        for (int d = 0; d < 3; d++)
+            for (int k = 0; k < _eval_length; k++)
+                _eval_offsets.push_back({d, k, k * DIR_Q[d], k * DIR_R[d]});
+        _pow3.resize(_eval_length);
+        _pow3[0] = 1;
+        for (int i = 1; i < _eval_length; i++)
+            _pow3[i] = _pow3[i - 1] * 3;
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    //  Time control
+    // ────────────────────────────────────────────────────────────────
+    inline void _check_time() {
+        _nodes++;
+        if ((_nodes & 1023) == 0 && Clock::now() >= _deadline)
+            throw TimeUp{};
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    //  TT key
+    // ────────────────────────────────────────────────────────────────
+    inline uint64_t _tt_key() const {
+        return _hash ^ (static_cast<uint64_t>(_cur_player) * 0x9e3779b97f4a7c15ULL)
+                      ^ (static_cast<uint64_t>(_moves_left) * 0x517cc1b727220a95ULL);
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    //  Incremental make / undo
+    // ────────────────────────────────────────────────────────────────
+    void _make(int q, int r) {
+        int8_t player = _cur_player;
+
+        // Zobrist
+        _hash ^= get_zobrist(q, r, player);
+
+        int8_t cell_val = (player == P_A) ? _cell_a : _cell_b;
+        int qi = q + OFF, ri = r + OFF;
+
+        // ── 6-cell windows ──
+        bool won = false;
+        if (player == P_A) {
+            for (const auto& wo : g_win_offsets) {
+                int sqi = qi - wo.oq, sri = ri - wo.or_;
+                auto& counts = _wc[wo.d_idx][sqi][sri];
+                counts.first++;
+                if (counts.first >= 4) _hot_a.insert(wo.d_idx, sqi, sri);
+                if (counts.first == WIN_LENGTH && counts.second == 0) won = true;
+            }
+        } else {
+            for (const auto& wo : g_win_offsets) {
+                int sqi = qi - wo.oq, sri = ri - wo.or_;
+                auto& counts = _wc[wo.d_idx][sqi][sri];
+                counts.second++;
+                if (counts.second >= 4) _hot_b.insert(wo.d_idx, sqi, sri);
+                if (counts.second == WIN_LENGTH && counts.first == 0) won = true;
+            }
+        }
+
+        // ── N-cell eval windows ──
+        const double* pv = _pv.data();
+        for (const auto& eo : _eval_offsets) {
+            int sqi = qi - eo.oq, sri = ri - eo.or_;
+            int& slot = _wp[eo.d_idx][sqi][sri];
+            int old_pi = slot;
+            int new_pi = old_pi + cell_val * _pow3[eo.k];
+            _eval_score += pv[new_pi] - pv[old_pi];
+            slot = new_pi;
+        }
+
+        // ── Candidates ──
+        Coord cell = pack(q, r);
+        _cand_set.erase(cell);
+        _rc_stack.push_back(_cand_rc[qi][ri]);
+        _cand_rc[qi][ri] = 0;
+
+        for (const auto& nb : g_nb_offsets) {
+            int nq = q + nb.dq, nr = r + nb.dr;
+            int nqi = nq + OFF, nri = nr + OFF;
+            _cand_rc[nqi][nri]++;
+            if (_board[nqi][nri] == 0)
+                _cand_set.insert(pack(nq, nr));
+        }
+
+        // Place stone
+        _board[qi][ri] = player;
+        _board_cells.push_back(cell);
+        _move_count++;
+
+        if (won) {
+            _winner    = player;
+            _game_over = true;
+        } else {
+            _moves_left--;
+            if (_moves_left <= 0) {
+                _cur_player = (player == P_A) ? P_B : P_A;
+                _moves_left = 2;
+            }
+        }
+    }
+
+    void _undo(int q, int r, const SavedState& st, int8_t player) {
+        int qi = q + OFF, ri = r + OFF;
+
+        // Remove stone
+        _board[qi][ri] = 0;
+        _board_cells.pop_back();
+        _move_count--;
+        _cur_player = st.cur_player;
+        _moves_left = st.moves_left;
+        _winner     = st.winner;
+        _game_over  = st.game_over;
+
+        // Zobrist
+        _hash ^= get_zobrist(q, r, player);
+
+        int8_t cell_val = (player == P_A) ? _cell_a : _cell_b;
+
+        // ── 6-cell windows ──
+        if (player == P_A) {
+            for (const auto& wo : g_win_offsets) {
+                int sqi = qi - wo.oq, sri = ri - wo.or_;
+                auto& counts = _wc[wo.d_idx][sqi][sri];
+                counts.first--;
+                if (counts.first < 4) _hot_a.erase(wo.d_idx, sqi, sri);
+            }
+        } else {
+            for (const auto& wo : g_win_offsets) {
+                int sqi = qi - wo.oq, sri = ri - wo.or_;
+                auto& counts = _wc[wo.d_idx][sqi][sri];
+                counts.second--;
+                if (counts.second < 4) _hot_b.erase(wo.d_idx, sqi, sri);
+            }
+        }
+
+        // ── N-cell eval windows ──
+        const double* pv = _pv.data();
+        for (const auto& eo : _eval_offsets) {
+            int sqi = qi - eo.oq, sri = ri - eo.or_;
+            int& slot = _wp[eo.d_idx][sqi][sri];
+            int old_pi = slot;
+            int new_pi = old_pi - cell_val * _pow3[eo.k];
+            _eval_score += pv[new_pi] - pv[old_pi];
+            slot = new_pi;
+        }
+
+        // ── Candidates ──
+        for (const auto& nb : g_nb_offsets) {
+            int nq = q + nb.dq, nr = r + nb.dr;
+            int nqi = nq + OFF, nri = nr + OFF;
+            _cand_rc[nqi][nri]--;
+            if (_cand_rc[nqi][nri] == 0)
+                _cand_set.erase(pack(nq, nr));
+        }
+        int saved_rc = _rc_stack.back();
+        _rc_stack.pop_back();
+        if (saved_rc > 0) {
+            Coord cell = pack(q, r);
+            _cand_rc[qi][ri] = saved_rc;
+            _cand_set.insert(cell);
+        }
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    //  Turn make / undo
+    // ────────────────────────────────────────────────────────────────
+    int _make_turn(const Turn& turn, UndoStep steps[2]) {
+        int q1 = pack_q(turn.first),  r1 = pack_r(turn.first);
+        int q2 = pack_q(turn.second), r2 = pack_r(turn.second);
+
+        steps[0] = {turn.first, {_cur_player, _moves_left, _winner, _game_over}, _cur_player};
+        _make(q1, r1);
+        if (_game_over) return 1;
+
+        steps[1] = {turn.second, {_cur_player, _moves_left, _winner, _game_over}, _cur_player};
+        _make(q2, r2);
+        return 2;
+    }
+
+    void _undo_turn(const UndoStep steps[], int n) {
+        for (int i = n - 1; i >= 0; i--)
+            _undo(pack_q(steps[i].cell), pack_r(steps[i].cell),
+                  steps[i].state, steps[i].player);
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    //  Move delta
+    // ────────────────────────────────────────────────────────────────
+    double _move_delta(int q, int r, bool is_a) const {
+        int8_t cell_val = is_a ? _cell_a : _cell_b;
+        const double* pv = _pv.data();
+        int qi = q + OFF, ri = r + OFF;
+        double delta = 0.0;
+        for (const auto& eo : _eval_offsets) {
+            int old_pi = _wp[eo.d_idx][qi - eo.oq][ri - eo.or_];
+            int new_pi = old_pi + cell_val * _pow3[eo.k];
+            delta += pv[new_pi] - pv[old_pi];
+        }
+        return delta;
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    //  Win / threat detection
+    // ────────────────────────────────────────────────────────────────
+    std::pair<bool, Turn> _find_instant_win(int8_t player) const {
+        int p_idx = (player == P_A) ? 0 : 1;
+        const auto& hot = (player == P_A) ? _hot_a : _hot_b;
+
+        for (const auto& he : hot.vec) {
+            auto& counts = _wc[he.d][he.qi][he.ri];
+            int my_count  = (p_idx == 0) ? counts.first : counts.second;
+            int opp_count = (p_idx == 0) ? counts.second : counts.first;
+
+            if (my_count >= WIN_LENGTH - 2 && opp_count == 0) {
+>>>>>>> 6402fb8e6c3093d72b970822bdf61c7e000deee9
                 int sq = he.qi - OFF, sr = he.ri - OFF;
                 int dq = DIR_Q[he.d], dr = DIR_R[he.d];
 
@@ -1217,10 +1753,225 @@ namespace opt
             return out.empty() ? turns : out;
         }
 
+<<<<<<< HEAD
         // ────────────────────────────────────────────────────────────────
         //  Turn generation
         // ────────────────────────────────────────────────────────────────
         std::vector<Turn> _generate_turns()
+=======
+        int n = static_cast<int>(cands.size());
+        std::vector<Turn> turns;
+        turns.reserve(n * (n - 1) / 2);
+        for (int i = 0; i < n; i++)
+            for (int j = i + 1; j < n; j++)
+                turns.push_back({cands[i], cands[j]});
+
+        return _filter_turns_by_threats(turns);
+    }
+
+    std::vector<Turn> _generate_threat_turns(
+            const flat_set<Coord>& my_threats,
+            const flat_set<Coord>& opp_threats) {
+        auto [found, wt] = _find_instant_win(_cur_player);
+        if (found) return {wt};
+
+        bool is_a = (_cur_player == P_A);
+        bool maximizing = (_cur_player == _player);
+        double sign = maximizing ? 1.0 : -1.0;
+
+        std::vector<Coord> opp_cells, my_cells;
+        for (Coord c : opp_threats) if (_cand_set.count(c)) opp_cells.push_back(c);
+        for (Coord c : my_threats)  if (_cand_set.count(c)) my_cells.push_back(c);
+
+        std::vector<Coord>* primary = nullptr;
+        if (!opp_cells.empty())     primary = &opp_cells;
+        else if (!my_cells.empty()) primary = &my_cells;
+        else return {};
+
+        if (primary->size() >= 2) {
+            int n = static_cast<int>(primary->size());
+            std::vector<Turn> pairs;
+            pairs.reserve(n * (n - 1) / 2);
+            for (int i = 0; i < n; i++)
+                for (int j = i + 1; j < n; j++)
+                    pairs.push_back({(*primary)[i], (*primary)[j]});
+            std::sort(pairs.begin(), pairs.end(),
+                [&](const Turn& a, const Turn& b) {
+                    double da = _move_delta(pack_q(a.first), pack_r(a.first), is_a)
+                              + _move_delta(pack_q(a.second), pack_r(a.second), is_a);
+                    double db = _move_delta(pack_q(b.first), pack_r(b.first), is_a)
+                              + _move_delta(pack_q(b.second), pack_r(b.second), is_a);
+                    return maximizing ? (da > db) : (da < db);
+                });
+            return pairs;
+        }
+
+        Coord tc = (*primary)[0];
+        Coord best_comp = tc;
+        double best_d = -INF_SCORE;
+        for (Coord c : _cand_set) {
+            if (c != tc) {
+                double d = _move_delta(pack_q(c), pack_r(c), is_a) * sign;
+                if (d > best_d) { best_d = d; best_comp = c; }
+            }
+        }
+        if (best_comp == tc) return {};
+        return {{coord_min(tc, best_comp), coord_max(tc, best_comp)}};
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    //  Quiescence search
+    // ────────────────────────────────────────────────────────────────
+    double _quiescence(double alpha, double beta, int qdepth) {
+        _check_time();
+
+        if (_game_over) {
+            if (_winner == _player)    return  WIN_SCORE - _ply;
+            if (_winner != P_NONE)     return -WIN_SCORE + _ply;
+            return 0.0;
+        }
+
+        auto [found, wt] = _find_instant_win(_cur_player);
+        if (found) {
+            UndoStep steps[2];
+            int n = _make_turn(wt, steps);
+            _ply++;
+            double sc = (_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply);
+            _ply--;
+            _undo_turn(steps, n);
+            return sc;
+        }
+
+        double stand_pat = _eval_score;
+        int8_t current  = _cur_player;
+        int8_t opponent = (current == P_A) ? P_B : P_A;
+        auto my_threats  = _find_threat_cells(current);
+        auto opp_threats = _find_threat_cells(opponent);
+
+        if ((my_threats.empty() && opp_threats.empty()) || qdepth <= 0)
+            return stand_pat;
+
+        bool maximizing = (current == _player);
+        if (maximizing) {
+            if (stand_pat >= beta) return stand_pat;
+            alpha = std::max(alpha, stand_pat);
+        } else {
+            if (stand_pat <= alpha) return stand_pat;
+            beta = std::min(beta, stand_pat);
+        }
+
+        auto threat_turns = _generate_threat_turns(my_threats, opp_threats);
+        if (threat_turns.empty()) return stand_pat;
+
+        double value = stand_pat;
+        if (maximizing) {
+            for (const auto& turn : threat_turns) {
+                UndoStep steps[2];
+                int nm = _make_turn(turn, steps);
+                _ply++;
+                double cv = _game_over
+                    ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
+                    : _quiescence(alpha, beta, qdepth - 1);
+                _ply--;
+                _undo_turn(steps, nm);
+                if (cv > value) value = cv;
+                alpha = std::max(alpha, value);
+                if (alpha >= beta) break;
+            }
+        } else {
+            for (const auto& turn : threat_turns) {
+                UndoStep steps[2];
+                int nm = _make_turn(turn, steps);
+                _ply++;
+                double cv = _game_over
+                    ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
+                    : _quiescence(alpha, beta, qdepth - 1);
+                _ply--;
+                _undo_turn(steps, nm);
+                if (cv < value) value = cv;
+                beta = std::min(beta, value);
+                if (alpha >= beta) break;
+            }
+        }
+        return value;
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    //  Root search
+    // ────────────────────────────────────────────────────────────────
+    std::pair<Turn, flat_map<Turn, double, TurnHash>>
+    _search_root(std::vector<Turn>& turns, int depth) {
+        bool maximizing = (_cur_player == _player);
+        Turn best = turns[0];
+        double alpha = -INF_SCORE, beta = INF_SCORE;
+
+        flat_map<Turn, double, TurnHash> scores;
+        scores.reserve(turns.size());
+
+        for (const auto& turn : turns) {
+            _check_time();
+            UndoStep steps[2];
+            int n = _make_turn(turn, steps);
+            _ply++;
+            double sc;
+            if (_game_over)
+                sc = (_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply);
+            else
+                sc = _minimax(depth - 1, alpha, beta);
+            _ply--;
+            _undo_turn(steps, n);
+            scores[turn] = sc;
+
+            if (maximizing && sc > alpha)  { alpha = sc; best = turn; }
+            if (!maximizing && sc < beta)  { beta  = sc; best = turn; }
+        }
+
+        double best_sc = maximizing ? alpha : beta;
+        _tt_store_entry(_tt_key(), depth, _tt_adjust_store(best_sc), TT_EXACT, best, true);
+        return {best, std::move(scores)};
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    //  Minimax
+    // ────────────────────────────────────────────────────────────────
+    double _minimax(int depth, double alpha, double beta) {
+        _check_time();
+
+        if (_game_over) {
+            if (_winner == _player)    return  WIN_SCORE - _ply;
+            if (_winner != P_NONE)     return -WIN_SCORE + _ply;
+            return 0.0;
+        }
+
+        uint64_t ttk = _tt_key();
+        Turn tt_move{};
+        bool has_tt_move = false;
+
+        TTEntry* tte = _tt_probe(ttk);
+        if (tte) {
+            has_tt_move = tte->has_move;
+            tt_move     = tte->move;
+            if (tte->depth >= depth) {
+                double sc = _tt_adjust_load(tte->score);
+                if (tte->flag == TT_EXACT) return sc;
+                if (tte->flag == TT_LOWER) alpha = std::max(alpha, sc);
+                if (tte->flag == TT_UPPER) beta  = std::min(beta,  sc);
+                if (alpha >= beta) return sc;
+            }
+        }
+
+        if (depth == 0) {
+            double sc = _quiescence(alpha, beta, MAX_QDEPTH);
+            int8_t qflag;
+            if (sc <= alpha) qflag = TT_UPPER;
+            else if (sc >= beta) qflag = TT_LOWER;
+            else qflag = TT_EXACT;
+            _tt_store_entry(ttk, 0, _tt_adjust_store(sc), qflag, Turn{}, false);
+            return sc;
+        }
+
+        // Instant win for current player
+>>>>>>> 6402fb8e6c3093d72b970822bdf61c7e000deee9
         {
             auto [found, wt] = _find_instant_win(_cur_player);
             if (found)
@@ -1381,6 +2132,10 @@ namespace opt
                 double sc = (_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply);
                 _ply--;
                 _undo_turn(steps, n);
+<<<<<<< HEAD
+=======
+                _tt_store_entry(ttk, depth, _tt_adjust_store(sc), TT_EXACT, wt, true);
+>>>>>>> 6402fb8e6c3093d72b970822bdf61c7e000deee9
                 return sc;
             }
 
@@ -1390,6 +2145,7 @@ namespace opt
             auto my_threats = _find_threat_cells(current);
             auto opp_threats = _find_threat_cells(opponent);
 
+<<<<<<< HEAD
             if ((my_threats.empty() && opp_threats.empty()) || qdepth <= 0)
                 return stand_pat;
 
@@ -1429,6 +2185,38 @@ namespace opt
                     alpha = std::max(alpha, value);
                     if (alpha >= beta)
                         break;
+=======
+                    int sq = he.qi - OFF, sr = he.ri - OFF;
+                    int dq = DIR_Q[he.d], dr = DIR_R[he.d];
+                    flat_set<Coord> empties;
+                    for (int j = 0; j < WIN_LENGTH; j++) {
+                        int cq = sq + j * dq, cr = sr + j * dr;
+                        if (_board[cq + OFF][cr + OFF] == 0)
+                            empties.insert(pack(cq, cr));
+                    }
+                    must_hit.push_back(std::move(empties));
+                }
+                if (must_hit.size() > 1) {
+                    flat_set<Coord> all_cells;
+                    for (const auto& s : must_hit) all_cells.insert(s.begin(), s.end());
+                    bool can_block = false;
+                    for (Coord c1 : all_cells) {
+                        for (Coord c2 : all_cells) {
+                            bool ok = true;
+                            for (const auto& w : must_hit)
+                                if (!w.count(c1) && !w.count(c2)) { ok = false; break; }
+                            if (ok) { can_block = true; break; }
+                        }
+                        if (can_block) break;
+                    }
+                    if (!can_block) {
+                        // Opponent has unblockable win — they win next turn
+                        double sc = (opponent != _player)
+                            ? (-WIN_SCORE + _ply + 1) : (WIN_SCORE - _ply - 1);
+                        _tt_store_entry(ttk, depth, _tt_adjust_store(sc), TT_EXACT, Turn{}, false);
+                        return sc;
+                    }
+>>>>>>> 6402fb8e6c3093d72b970822bdf61c7e000deee9
                 }
             }
             else
@@ -1501,6 +2289,7 @@ namespace opt
         std::pair<Turn, flat_map<Turn, double, TurnHash>>
         _search_root_aspiration(std::vector<Turn> &turns, int depth)
         {
+<<<<<<< HEAD
             _check_time();
             double alpha = -INF_SCORE;
             double beta = INF_SCORE;
@@ -1605,10 +2394,18 @@ namespace opt
                     _undo_turn(steps, n);
                     if (!_in_aspiration)
                         _tt[ttk] = {depth, _tt_store(sc), TT_EXACT, wt, true};
+=======
+            std::vector<Coord> cands(_cand_set.begin(), _cand_set.end());
+            if (cands.size() < 2) {
+                if (cands.empty()) {
+                    double sc = _eval_score;
+                    _tt_store_entry(ttk, depth, sc, TT_EXACT, Turn{}, false);
+>>>>>>> 6402fb8e6c3093d72b970822bdf61c7e000deee9
                     return sc;
                 }
             }
 
+<<<<<<< HEAD
             // Opponent instant win -> check if blockable
             int8_t opponent = (_cur_player == P_A) ? P_B : P_A;
             {
@@ -1625,6 +2422,20 @@ namespace opt
                         int oc = (p_idx == 0) ? counts.second : counts.first;
                         if (mc < WIN_LENGTH - 2 || oc != 0)
                             continue;
+=======
+                // Score by delta only — keeps candidate selection
+                // deterministic and independent of history heuristic.
+                std::vector<std::pair<double, Coord>> scored;
+                scored.reserve(cands.size());
+                for (Coord c : cands) {
+                    scored.push_back({_move_delta(pack_q(c), pack_r(c), is_a) * dsign, c});
+                }
+                std::sort(scored.begin(), scored.end(),
+                    [](const auto& a, const auto& b) {
+                        if (a.first != b.first) return a.first > b.first;
+                        return a.second < b.second;
+                    });
+>>>>>>> 6402fb8e6c3093d72b970822bdf61c7e000deee9
 
                         int sq = he.qi - OFF, sr = he.ri - OFF;
                         int dq = DIR_Q[he.d], dr = DIR_R[he.d];
@@ -1677,8 +2488,16 @@ namespace opt
                 }
             }
 
+<<<<<<< HEAD
             double orig_alpha = alpha, orig_beta = beta;
             bool maximizing = (_cur_player == _player);
+=======
+        if (turns.empty()) {
+            double sc = _eval_score;
+            _tt_store_entry(ttk, depth, sc, TT_EXACT, Turn{}, false);
+            return sc;
+        }
+>>>>>>> 6402fb8e6c3093d72b970822bdf61c7e000deee9
 
             // Generate candidates and turns
             std::vector<Turn> turns;
@@ -1700,6 +2519,7 @@ namespace opt
                     bool is_a = (_cur_player == P_A);
                     double dsign = maximizing ? DELTA_WEIGHT : -DELTA_WEIGHT;
 
+<<<<<<< HEAD
                     std::vector<std::pair<double, Coord>> scored;
                     scored.reserve(cands.size());
                     for (Coord c : cands)
@@ -1820,9 +2640,69 @@ namespace opt
                         _history[turn.second] += depth * depth;
                         break;
                     }
+=======
+        // Killer move ordering (after TT move)
+        if (_ply < MAX_KILLERS_PLY) {
+            size_t next = has_tt_move ? 1 : 0;
+            for (int ki = 0; ki < 2; ki++) {
+                const Turn& killer = _killers[_ply][ki];
+                if (killer.first == 0 && killer.second == 0) continue;
+                if (has_tt_move && killer == tt_move) continue;
+                for (size_t i = next; i < turns.size(); i++)
+                    if (turns[i] == killer) {
+                        std::swap(turns[next], turns[i]);
+                        next++;
+                        break;
+                    }
+            }
+        }
+
+        Turn best_move{};
+        double value;
+
+        if (maximizing) {
+            value = -INF_SCORE;
+            for (const auto& turn : turns) {
+                UndoStep steps[2];
+                int n = _make_turn(turn, steps);
+                _ply++;
+                double cv = _game_over
+                    ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
+                    : _minimax(depth - 1, alpha, beta);
+                _ply--;
+                _undo_turn(steps, n);
+                if (cv > value) { value = cv; best_move = turn; }
+                alpha = std::max(alpha, value);
+                if (alpha >= beta) {
+                    _history[turn.first]  += depth * depth;
+                    _history[turn.second] += depth * depth;
+                    _store_killer(_ply, turn);
+                    break;
+                }
+            }
+        } else {
+            value = INF_SCORE;
+            for (const auto& turn : turns) {
+                UndoStep steps[2];
+                int n = _make_turn(turn, steps);
+                _ply++;
+                double cv = _game_over
+                    ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
+                    : _minimax(depth - 1, alpha, beta);
+                _ply--;
+                _undo_turn(steps, n);
+                if (cv < value) { value = cv; best_move = turn; }
+                beta = std::min(beta, value);
+                if (alpha >= beta) {
+                    _history[turn.first]  += depth * depth;
+                    _history[turn.second] += depth * depth;
+                    _store_killer(_ply, turn);
+                    break;
+>>>>>>> 6402fb8e6c3093d72b970822bdf61c7e000deee9
                 }
             }
 
+<<<<<<< HEAD
             int8_t flag;
             if (value <= orig_alpha)
                 flag = TT_UPPER;
@@ -1835,5 +2715,15 @@ namespace opt
             return value;
         }
     };
+=======
+        int8_t flag;
+        if      (value <= orig_alpha) flag = TT_UPPER;
+        else if (value >= orig_beta)  flag = TT_LOWER;
+        else                          flag = TT_EXACT;
+        _tt_store_entry(ttk, depth, _tt_adjust_store(value), flag, best_move, true);
+        return value;
+    }
+};
+>>>>>>> 6402fb8e6c3093d72b970822bdf61c7e000deee9
 
 } // namespace opt
