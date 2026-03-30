@@ -703,12 +703,17 @@ private:
     void _tt_store_entry(uint64_t full_key, int depth, double score,
                          int8_t flag, const Turn& move, bool has_move) {
         auto& e    = _tt[static_cast<size_t>(full_key) & _tt_mask];
-        e.key      = static_cast<uint32_t>(full_key >> 32);
-        e.depth    = static_cast<int16_t>(depth);
-        e.score    = score;
-        e.flag     = flag;
-        e.move     = move;
-        e.has_move = has_move;
+        uint32_t verify = static_cast<uint32_t>(full_key >> 32);
+        // Depth-preferred replacement: keep deeper entries for the same position;
+        // always replace if the slot holds a different position.
+        if (e.key != verify || depth >= e.depth) {
+            e.key      = verify;
+            e.depth    = static_cast<int16_t>(depth);
+            e.score    = score;
+            e.flag     = flag;
+            e.move     = move;
+            e.has_move = has_move;
+        }
     }
 
     // ── History table ──
