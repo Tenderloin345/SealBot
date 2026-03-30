@@ -1458,7 +1458,6 @@ namespace opt
         std::pair<Turn, flat_map<Turn, double, TurnHash>>
         _search_root(std::vector<Turn> &turns, int depth, double alpha, double beta)
         {
-            _in_aspiration = true;
             bool maximizing = (_cur_player == _player);
             Turn best = turns[0];
 
@@ -1502,7 +1501,6 @@ namespace opt
         std::pair<Turn, flat_map<Turn, double, TurnHash>>
         _search_root_aspiration(std::vector<Turn> &turns, int depth)
         {
-            _in_aspiration = true;
             _check_time();
             double alpha = -INF_SCORE;
             double beta = INF_SCORE;
