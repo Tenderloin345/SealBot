@@ -6,3 +6,4 @@ build/
 __pycache__/
 positions/
 experiments/cma/output/
+CLAUDE.md
