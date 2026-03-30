@@ -16,11 +16,13 @@ import math
 import multiprocessing as mp
 import os
 import pickle
+import random
 import sys
 import time
 
 import cma
 import numpy as np
+from tqdm import tqdm
 
 # ── Path setup ──────────────────────────────────────────────────────────────
 
@@ -28,11 +30,13 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, "output")
 CHECKPOINT_PATH = os.path.join(OUTPUT_DIR, "checkpoint.pkl")
+POOL_DIR = os.path.join(OUTPUT_DIR, "pool")
 
 sys.path.insert(0, ROOT_DIR)
 sys.path.insert(0, SCRIPT_DIR)
 
-from symmetry import free_to_full, full_to_free, load_baseline, save_pattern_data_h
+from symmetry import (free_to_full, full_to_free, load_baseline, load_current,
+                       save_pattern_data_h, CURRENT_PATTERN_DATA_PATH)
 
 
 # ── Statistics (mirrors evaluate.py) ────────────────────────────────────────
@@ -84,59 +88,6 @@ def _init_worker(cfg):
     sys.path.insert(0, cfg["root_dir"])
 
 
-def _evaluate_one(free_params):
-    """Fitness function: play games, return (neg_win_rate, wins, losses, draws).
-
-    CMA-ES minimizes, so better candidates have more negative fitness.
-    """
-    from game import Player
-    import cma_minimax_cpp
-
-    num_games = _CFG["num_games"]
-    time_limit = _CFG["time_limit"]
-
-    full_params = free_to_full(free_params)
-
-    wins, losses, draws = 0, 0, 0
-    for game_idx in range(num_games):
-        swapped = game_idx % 2 == 1
-
-        # Fresh bots each game (clean transposition tables etc.)
-        candidate = cma_minimax_cpp.MinimaxBot(time_limit)
-        candidate.load_patterns(full_params)
-        baseline = cma_minimax_cpp.MinimaxBot(time_limit)
-
-        if swapped:
-            bot_a, bot_b = baseline, candidate
-        else:
-            bot_a, bot_b = candidate, baseline
-
-        try:
-            winner = _play_game(bot_a, bot_b, time_limit)
-        except Exception:
-            winner = Player.NONE
-
-        # Score from candidate's perspective
-        candidate_is = Player.A if not swapped else Player.B
-        if winner == candidate_is:
-            wins += 1
-        elif winner == Player.NONE:
-            draws += 1
-        else:
-            losses += 1
-
-    win_rate = (wins + 0.5 * draws) / num_games
-    return (-win_rate, wins, losses, draws)
-
-
-def _evaluate_one_with_cfg(free_params, cfg):
-    """Like _evaluate_one but takes explicit cfg (for validation calls)."""
-    global _CFG
-    _CFG = cfg
-    sys.path.insert(0, cfg["script_dir"])
-    sys.path.insert(0, cfg["root_dir"])
-    return _evaluate_one(free_params)
-
 
 def _play_game(bot_a, bot_b, time_limit, max_moves=200):
     """Play one game between two bot engines. Returns the winner."""
@@ -163,17 +114,116 @@ def _play_game(bot_a, bot_b, time_limit, max_moves=200):
     return game.winner
 
 
+def _play_single_game(args):
+    """Play one game. Returns (candidate_idx, w, l, d) as ints.
+
+    cfg must contain either 'opponent_weights' (fixed opponent) or
+    'opponent_pool' (random choice per game).
+    """
+    free_params, candidate_idx, game_idx, cfg = args
+
+    sys.path.insert(0, cfg["script_dir"])
+    sys.path.insert(0, cfg["root_dir"])
+    from game import Player
+    import cma_minimax_cpp
+
+    swapped = game_idx % 2 == 1
+    tl = random.uniform(cfg["time_limit"], cfg.get("time_limit_max", cfg["time_limit"]))
+
+    full_params = free_to_full(free_params, single_color=cfg.get("single_color", False))
+    candidate = cma_minimax_cpp.MinimaxBot(tl)
+    candidate.load_patterns(full_params)
+    baseline = cma_minimax_cpp.MinimaxBot(tl)
+
+    if "opponent_weights" in cfg:
+        baseline.load_patterns(cfg["opponent_weights"])
+    elif cfg.get("opponent_pool"):
+        baseline.load_patterns(random.choice(cfg["opponent_pool"]))
+
+    if swapped:
+        bot_a, bot_b = baseline, candidate
+    else:
+        bot_a, bot_b = candidate, baseline
+
+    try:
+        winner = _play_game(bot_a, bot_b, tl)
+    except Exception:
+        winner = Player.NONE
+
+    candidate_is = Player.A if not swapped else Player.B
+    if winner == candidate_is:
+        return (candidate_idx, 1, 0, 0)
+    elif winner == Player.NONE:
+        return (candidate_idx, 0, 0, 1)
+    else:
+        return (candidate_idx, 0, 1, 0)
+
+
+def _run_promotion_eval(best_free, opponent_weights, cfg, num_games, num_workers,
+                         desc="Promotion"):
+    """Evaluate best vs opponent, one game per task for even load balancing."""
+    game_cfg = dict(cfg, opponent_weights=opponent_weights)
+    tasks = [(best_free, 0, i, game_cfg) for i in range(num_games)]
+
+    with mp.Pool(num_workers, initializer=_init_worker, initargs=(cfg,)) as pool:
+        results = list(tqdm(pool.imap(_play_single_game, tasks),
+                            total=num_games, desc=desc, leave=False))
+
+    total_w = sum(r[1] for r in results)
+    total_l = sum(r[2] for r in results)
+    total_d = sum(r[3] for r in results)
+    return total_w, total_l, total_d
+
+
 # ── Main optimization loop ─────────────────────────────────────────────────
+
+def _load_pool(pool_dir, baseline_full):
+    """Load opponent weight files from pool dir. Returns list of full-729 lists."""
+    pool = [baseline_full]  # always include the original baseline
+    if os.path.isdir(pool_dir):
+        for name in sorted(os.listdir(pool_dir)):
+            if not name.endswith(".h"):
+                continue
+            path = os.path.join(pool_dir, name)
+            try:
+                import re
+                with open(path) as f:
+                    text = f.read()
+                match = re.search(r"PATTERN_VALUES\[\]\s*=\s*\{([^}]+)\}", text)
+                if match:
+                    nums = re.findall(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?",
+                                      match.group(1))
+                    vals = [float(x) for x in nums]
+                    if len(vals) == 729:
+                        pool.append(vals)
+            except Exception:
+                pass
+    return pool
+
+
+def _save_to_pool(pool_dir, full_params, gen):
+    """Save weights to pool directory."""
+    os.makedirs(pool_dir, exist_ok=True)
+    path = os.path.join(pool_dir, f"gen_{gen:04d}.h")
+    save_pattern_data_h(full_params, path)
+    return path
+
 
 def run(args):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     # Load starting point
-    baseline_full = load_baseline()
-    x0 = full_to_free(baseline_full)
-    print(f"Free parameters: {len(x0)} (from {len(baseline_full)} total)")
+    current_full = load_current()
+    x0 = full_to_free(current_full, single_color=args.single_color)
+    print(f"Free parameters: {len(x0)} (from {len(current_full)} total)"
+          f"{' [single-color only]' if args.single_color else ''}")
     print(f"Parameter stats: median |x|={np.median(np.abs(x0)):.0f}, "
           f"mean |x|={np.mean(np.abs(x0)):.0f}, max |x|={np.max(np.abs(x0)):.0f}")
+
+    # Load opponent pool
+    opponent_pool = _load_pool(POOL_DIR, current_full)
+    print(f"Opponent pool: {len(opponent_pool)} bots"
+          f" (1 current + {len(opponent_pool)-1} from {POOL_DIR})")
 
     # CMA-ES options
     opts = cma.CMAOptions()
@@ -194,41 +244,54 @@ def run(args):
         best_fitness = state["best_fitness"]
         best_free = state["best_free"]
         gen_offset = state["generation"]
-        print(f"  Resuming at generation {gen_offset}, best fitness {best_fitness:.4f}")
+        promotion_count = state.get("promotion_count", 0)
+        print(f"  Resuming at generation {gen_offset}, best fitness {best_fitness:.4f}"
+              f", promotions: {promotion_count}")
     else:
+        # Clean start: wipe all previous output
+        import shutil
+        if os.path.exists(OUTPUT_DIR):
+            shutil.rmtree(OUTPUT_DIR)
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        opponent_pool = [current_full]  # reset pool to just current
+        print(f"  Clean start (wiped {OUTPUT_DIR})")
+
         es = cma.CMAEvolutionStrategy(x0, args.sigma0, opts)
         best_fitness = 0.0   # worst possible (win rate = 0)
         best_free = x0.copy()
         gen_offset = 0
+        promotion_count = 0
 
     # Worker config
+    time_limit_max = args.time_limit_max or args.time_limit
     cfg = {
         "num_games": args.games,
         "time_limit": args.time_limit,
+        "time_limit_max": time_limit_max,
         "script_dir": SCRIPT_DIR,
         "root_dir": ROOT_DIR,
+        "single_color": args.single_color,
+        "opponent_pool": opponent_pool,
     }
 
     num_workers = args.workers or mp.cpu_count()
+    tl_str = (f"{args.time_limit}s" if time_limit_max == args.time_limit
+              else f"{args.time_limit}–{time_limit_max}s")
     print(f"\nCMA-ES: sigma0={args.sigma0}, popsize={args.popsize}, "
-          f"games/eval={args.games}, time_limit={args.time_limit}s")
+          f"games/eval={args.games}, time_limit={tl_str}")
     print(f"Workers: {num_workers}, max generations: {args.max_gen}")
-    print(f"Validate every {args.validate_every} gens with {args.validate_games} games")
+    print(f"Promote at {args.promote_threshold:.0%} WR ({args.promote_games} games vs current/)")
     print(f"Output: {OUTPUT_DIR}\n")
 
     # CSV log
     csv_path = os.path.join(OUTPUT_DIR, "log.csv")
     csv_fields = ["gen", "best_wr", "gen_best_wr", "mean_wr",
-                  "sigma", "gen_time", "total_time",
-                  "val_wr", "val_ci_lo", "val_ci_hi", "val_elo", "val_p", "val_n"]
+                  "sigma", "gen_time", "total_time"]
     write_header = not (args.resume and os.path.exists(csv_path))
     csv_file = open(csv_path, "a", newline="")
     csv_writer = csv.DictWriter(csv_file, fieldnames=csv_fields)
     if write_header:
         csv_writer.writeheader()
-
-    # Cumulative validation stats for best-so-far
-    val_total = {"wins": 0, "losses": 0, "draws": 0}
 
     gen = gen_offset
     t_start = time.time()
@@ -241,9 +304,31 @@ def run(args):
             # Ask for candidate solutions
             solutions = es.ask()
 
-            # Evaluate in parallel -- returns (neg_wr, wins, losses, draws)
+            # Evaluate in parallel -- one game per task for smooth progress
+            num_games = cfg["num_games"]
+            tasks = [(sol, ci, gi, cfg)
+                     for ci, sol in enumerate(solutions)
+                     for gi in range(num_games)]
+
             with mp.Pool(num_workers, initializer=_init_worker, initargs=(cfg,)) as pool:
-                results = pool.map(_evaluate_one, solutions)
+                game_results = list(tqdm(pool.imap(_play_single_game, tasks),
+                                         total=len(tasks), desc=f"Gen {gen}",
+                                         leave=False))
+
+            # Aggregate per candidate
+            n_candidates = len(solutions)
+            wins = [0] * n_candidates
+            losses = [0] * n_candidates
+            draws = [0] * n_candidates
+            for ci, w, l, d in game_results:
+                wins[ci] += w
+                losses[ci] += l
+                draws[ci] += d
+
+            results = []
+            for ci in range(n_candidates):
+                wr = (wins[ci] + 0.5 * draws[ci]) / num_games
+                results.append((-wr, wins[ci], losses[ci], draws[ci]))
 
             fitnesses = [r[0] for r in results]
             es.tell(solutions, fitnesses)
@@ -251,13 +336,17 @@ def run(args):
             # Track best
             gen_best_idx = int(np.argmin(fitnesses))
             gen_best_fit = fitnesses[gen_best_idx]
+            gen_best_free = np.array(solutions[gen_best_idx])
             best_changed = False
             if gen_best_fit < best_fitness:
                 best_fitness = gen_best_fit
-                best_free = np.array(solutions[gen_best_idx])
+                best_free = gen_best_free
                 best_changed = True
-                # Reset cumulative validation when best changes
-                val_total = {"wins": 0, "losses": 0, "draws": 0}
+
+            # Save every generation's best for later evaluation
+            gen_full = free_to_full(gen_best_free,
+                                    single_color=args.single_color)
+            _save_to_pool(POOL_DIR, gen_full, gen)
 
             elapsed_gen = time.time() - t_gen
             elapsed_total = time.time() - t_start
@@ -274,7 +363,8 @@ def run(args):
                   f"(elo {gen_stats['elo']:+.0f}), "
                   f"sigma={es.sigma:.1f}, "
                   f"{elapsed_gen:.0f}s"
-                  f"{'  *new best*' if best_changed else ''}")
+                  f"{'  *new best*' if best_changed else ''}"
+                  f"  [{len(opponent_pool)} opps]")
 
             # CSV row (validation fields filled below if applicable)
             row = {
@@ -286,37 +376,6 @@ def run(args):
                 "total_time": f"{elapsed_total:.0f}",
             }
 
-            # ── Validation of best-so-far every N generations ──
-            if gen % args.validate_every == 0:
-                print(f"  Validating best-so-far ({args.validate_games} games)...")
-                t_val = time.time()
-
-                with mp.Pool(num_workers, initializer=_init_worker, initargs=(cfg,)) as pool:
-                    val_cfg = dict(cfg, num_games=args.validate_games)
-                    val_result = pool.apply(_evaluate_one_with_cfg,
-                                           (best_free, val_cfg))
-
-                _, vw, vl, vd = val_result
-                val_total["wins"] += vw
-                val_total["losses"] += vl
-                val_total["draws"] += vd
-                vs = win_rate_stats(val_total["wins"], val_total["losses"],
-                                    val_total["draws"])
-                print(f"  Validation: {vw}W/{vl}L/{vd}D this round, "
-                      f"cumulative {val_total['wins']}W/{val_total['losses']}L/{val_total['draws']}D")
-                print(f"    WR: {vs['wr']:.1%} "
-                      f"[{vs['ci_lo']:.1%}, {vs['ci_hi']:.1%}] "
-                      f"(95% CI), "
-                      f"Elo: {vs['elo']:+.0f}, "
-                      f"p={vs['p']:.4f}, "
-                      f"n={vs['n']}, "
-                      f"{time.time()-t_val:.0f}s")
-                row.update({
-                    "val_wr": f"{vs['wr']:.4f}", "val_ci_lo": f"{vs['ci_lo']:.4f}",
-                    "val_ci_hi": f"{vs['ci_hi']:.4f}", "val_elo": f"{vs['elo']:.0f}",
-                    "val_p": f"{vs['p']:.6f}", "val_n": vs["n"],
-                })
-
             csv_writer.writerow(row)
             csv_file.flush()
 
@@ -327,15 +386,58 @@ def run(args):
                     "best_fitness": best_fitness,
                     "best_free": best_free,
                     "generation": gen,
-                    "val_total": val_total,
+                    "promotion_count": promotion_count,
                 }, f)
 
-            # Save best pattern_data.h every 10 generations
-            if gen % 10 == 0:
-                best_full = free_to_full(best_free)
-                out_path = os.path.join(OUTPUT_DIR, "best_pattern_data.h")
-                save_pattern_data_h(best_full, out_path)
-                print(f"  Saved weights: {out_path}")
+            # Save best pattern_data.h every generation
+            best_full = free_to_full(best_free, single_color=args.single_color)
+            out_path = os.path.join(OUTPUT_DIR, "best_pattern_data.h")
+            save_pattern_data_h(best_full, out_path)
+
+            # ── Promotion check: evaluate best vs current/ ──
+            if best_changed and args.promote_games > 0:
+                print(f"  Promotion eval ({args.promote_games} games vs current/)...")
+                t_promo = time.time()
+                pw, pl, pd = _run_promotion_eval(
+                    best_free, current_full, cfg,
+                    args.promote_games, num_workers)
+                ps = win_rate_stats(pw, pl, pd)
+                print(f"    {pw}W/{pl}L/{pd}D = {ps['wr']:.1%} "
+                      f"[{ps['ci_lo']:.1%}, {ps['ci_hi']:.1%}] "
+                      f"Elo: {ps['elo']:+.0f} p={ps['p']:.4f} "
+                      f"({time.time()-t_promo:.0f}s)")
+
+                if ps['wr'] >= args.promote_threshold:
+                    promotion_count += 1
+                    best_full = free_to_full(best_free,
+                                             single_color=args.single_color)
+                    save_pattern_data_h(best_full, CURRENT_PATTERN_DATA_PATH)
+                    current_full = best_full
+
+                    # Check total progress vs best/
+                    best_baseline = load_baseline()
+                    bw, bl, bd = _run_promotion_eval(
+                        best_free, best_baseline, cfg, 100, num_workers,
+                        desc="vs best/")
+                    bs = win_rate_stats(bw, bl, bd)
+                    print(f"  vs best/: {bw}W/{bl}L/{bd}D = {bs['wr']:.1%} "
+                          f"[{bs['ci_lo']:.1%}, {bs['ci_hi']:.1%}] "
+                          f"Elo: {bs['elo']:+.0f} p={bs['p']:.4f}")
+
+                    print(f"\n  {'='*50}")
+                    print(f"  PROMOTED to current/ (#{promotion_count})")
+                    print(f"  Restarting CMA-ES with new baseline")
+                    print(f"  {'='*50}\n")
+
+                    # Restart CMA-ES
+                    x0 = best_free.copy()
+                    es = cma.CMAEvolutionStrategy(x0, args.sigma0, opts)
+                    best_fitness = 0.0
+                    best_free = x0.copy()
+
+                    # Reset pool and config to new current
+                    opponent_pool = [current_full]
+                    cfg["opponent_pool"] = opponent_pool
 
     except KeyboardInterrupt:
         print("\n\nInterrupted by user.")
@@ -348,13 +450,10 @@ def run(args):
     save_pattern_data_h(best_full, out_path)
 
     elapsed = time.time() - t_start
-    vs = win_rate_stats(val_total["wins"], val_total["losses"], val_total["draws"])
     print(f"\n{'='*60}")
     print(f"  CMA-ES finished after {gen - gen_offset} generations ({elapsed/60:.0f} min)")
-    print(f"  Best win rate vs baseline: {-best_fitness:.1%}")
-    if vs["n"] > 0:
-        print(f"  Validated: {vs['wr']:.1%} [{vs['ci_lo']:.1%}, {vs['ci_hi']:.1%}]"
-              f"  Elo: {vs['elo']:+.0f}  p={vs['p']:.4f}  (n={vs['n']})")
+    print(f"  Promotions: {promotion_count}")
+    print(f"  Best win rate vs current: {-best_fitness:.1%}")
     print(f"  CSV log:  {csv_path}")
     print(f"  Weights:  {out_path}")
     print(f"\n  To use these weights:")
@@ -373,7 +472,9 @@ if __name__ == "__main__":
     parser.add_argument("--games", type=int, default=20,
                         help="Games per fitness evaluation (default: 20)")
     parser.add_argument("--time-limit", type=float, default=0.02,
-                        help="Seconds per move during evaluation (default: 0.02)")
+                        help="Min seconds per move during evaluation (default: 0.02)")
+    parser.add_argument("--time-limit-max", type=float, default=None,
+                        help="Max seconds per move (default: same as --time-limit)")
     parser.add_argument("--popsize", type=int, default=50,
                         help="CMA-ES population size (default: 50)")
     parser.add_argument("--sigma0", type=float, default=50.0,
@@ -382,13 +483,15 @@ if __name__ == "__main__":
                         help="Maximum generations (default: 500)")
     parser.add_argument("--workers", type=int, default=None,
                         help="Parallel workers (default: cpu_count)")
-    parser.add_argument("--validate-every", type=int, default=10,
-                        help="Run validation every N generations (default: 10)")
-    parser.add_argument("--validate-games", type=int, default=40,
-                        help="Games per validation run (default: 40)")
     parser.add_argument("--resume", action="store_true",
                         help="Resume from checkpoint")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed (default: 42)")
+    parser.add_argument("--single-color", action="store_true",
+                        help="Only optimize single-color patterns (63 params instead of 364)")
+    parser.add_argument("--promote-threshold", type=float, default=0.65,
+                        help="Win rate to promote best to current/ and restart (default: 0.65)")
+    parser.add_argument("--promote-games", type=int, default=400,
+                        help="Games for promotion evaluation (default: 400)")
 
     run(parser.parse_args())
