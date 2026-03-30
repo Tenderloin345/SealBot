@@ -117,11 +117,12 @@ struct UndoStep {
 };
 
 struct TTEntry {
-    int    depth;
-    double score;
-    int8_t flag;
-    Turn   move;
-    bool   has_move;
+    uint32_t key = 0;   // upper 32 bits of hash (verification)
+    int16_t  depth = 0;
+    int8_t   flag  = 0; // TT_EXACT / TT_LOWER / TT_UPPER
+    double   score = 0;
+    Turn     move  = {};
+    bool     has_move = false;
 };
 
 struct TimeUp {};
@@ -260,10 +261,12 @@ public:
     int    max_depth   = 200;
 
     // ── Constructors ──
-    MinimaxBot() : time_limit(0.05), _rng(std::random_device{}()) { ensure_tables(); }
+    MinimaxBot() : time_limit(0.05), _rng(std::random_device{}()),
+                   _tt(1 << 20), _tt_mask((1 << 20) - 1) { ensure_tables(); }
 
     explicit MinimaxBot(double tl)
-        : time_limit(tl), _rng(std::random_device{}())
+        : time_limit(tl), _rng(std::random_device{}()),
+          _tt(1 << 20), _tt_mask((1 << 20) - 1)
     {
         ensure_tables();
     }
@@ -330,9 +333,8 @@ public:
         _deadline = Clock::now() + std::chrono::microseconds(
                         static_cast<int64_t>(time_limit * 1000000.0));
 
-        // ── Player tracking / TT management ──
+        // ── Player tracking ──
         if (_cur_player != _player) {
-            _tt.clear();
             _history.clear();
             std::memset(_killers, 0, sizeof(_killers));
         }
@@ -342,7 +344,6 @@ public:
         last_depth = 0;
         last_score = 0;
         last_ebf   = 0;
-        if (_tt.size() > 1000000) _tt.clear();
 
         // ── Zobrist ──
         _hash = 0;
@@ -551,11 +552,11 @@ public:
             }
 
             // 2. TT entry with a best move
-            auto it = _tt.find(ttk);
-            if (it != _tt.end() && it->second.has_move) {
-                double sc = _tt_load(it->second.score);
+            TTEntry* tte = _tt_probe(ttk);
+            if (tte && tte->has_move) {
+                double sc = _tt_adjust_load(tte->score);
                 if (std::abs(sc) < WIN_THRESHOLD) break;
-                Turn best_turn = it->second.move;
+                Turn best_turn = tte->move;
                 undo_stack.push_back({});
                 auto& back = undo_stack.back();
                 back.second = _make_turn(best_turn, back.first);
@@ -593,10 +594,10 @@ public:
                     continue;
                 }
                 // Check TT for score after this response
-                auto tt2 = _tt.find(_tt_key());
+                TTEntry* tt2 = _tt_probe(_tt_key());
                 double surv;
-                if (tt2 != _tt.end()) {
-                    surv = _tt_load(tt2->second.score);
+                if (tt2) {
+                    surv = _tt_adjust_load(tt2->score);
                 } else {
                     // No TT — use instant win check as proxy
                     auto [ofw, _owt] = _find_instant_win(opponent);
@@ -678,19 +679,39 @@ private:
     int      _ply       = 0;  // distance from root (for mate-distance scoring)
 
     // Mate-distance TT adjustment: store position-relative win distances
-    double _tt_store(double score) const {
+    double _tt_adjust_store(double score) const {
         if (score >  WIN_THRESHOLD) return score + _ply;
         if (score < -WIN_THRESHOLD) return score - _ply;
         return score;
     }
-    double _tt_load(double score) const {
+    double _tt_adjust_load(double score) const {
         if (score >  WIN_THRESHOLD) return score - _ply;
         if (score < -WIN_THRESHOLD) return score + _ply;
         return score;
     }
 
-    // ── Transposition table & history (hash maps) ──
-    flat_map<uint64_t, TTEntry> _tt;
+    // ── Transposition table (fixed-size, direct-mapped, always-overwrite) ──
+    std::vector<TTEntry> _tt;
+    uint64_t _tt_mask = 0;
+
+    TTEntry* _tt_probe(uint64_t full_key) {
+        uint32_t verify = static_cast<uint32_t>(full_key >> 32);
+        auto& e = _tt[static_cast<size_t>(full_key) & _tt_mask];
+        return (e.key == verify) ? &e : nullptr;
+    }
+
+    void _tt_store_entry(uint64_t full_key, int depth, double score,
+                         int8_t flag, const Turn& move, bool has_move) {
+        auto& e    = _tt[static_cast<size_t>(full_key) & _tt_mask];
+        e.key      = static_cast<uint32_t>(full_key >> 32);
+        e.depth    = static_cast<int16_t>(depth);
+        e.score    = score;
+        e.flag     = flag;
+        e.move     = move;
+        e.has_move = has_move;
+    }
+
+    // ── History table ──
     flat_map<Coord, int>        _history;
 
     // ── Killer moves (2 slots per ply) ──
@@ -1248,7 +1269,7 @@ private:
         }
 
         double best_sc = maximizing ? alpha : beta;
-        _tt[_tt_key()] = {depth, _tt_store(best_sc), TT_EXACT, best, true};
+        _tt_store_entry(_tt_key(), depth, _tt_adjust_store(best_sc), TT_EXACT, best, true);
         return {best, std::move(scores)};
     }
 
@@ -1268,16 +1289,15 @@ private:
         Turn tt_move{};
         bool has_tt_move = false;
 
-        auto tt_it = _tt.find(ttk);
-        if (tt_it != _tt.end()) {
-            const auto& e = tt_it->second;
-            has_tt_move = e.has_move;
-            tt_move     = e.move;
-            if (e.depth >= depth) {
-                double sc = _tt_load(e.score);
-                if (e.flag == TT_EXACT) return sc;
-                if (e.flag == TT_LOWER) alpha = std::max(alpha, sc);
-                if (e.flag == TT_UPPER) beta  = std::min(beta,  sc);
+        TTEntry* tte = _tt_probe(ttk);
+        if (tte) {
+            has_tt_move = tte->has_move;
+            tt_move     = tte->move;
+            if (tte->depth >= depth) {
+                double sc = _tt_adjust_load(tte->score);
+                if (tte->flag == TT_EXACT) return sc;
+                if (tte->flag == TT_LOWER) alpha = std::max(alpha, sc);
+                if (tte->flag == TT_UPPER) beta  = std::min(beta,  sc);
                 if (alpha >= beta) return sc;
             }
         }
@@ -1288,7 +1308,7 @@ private:
             if (sc <= alpha) qflag = TT_UPPER;
             else if (sc >= beta) qflag = TT_LOWER;
             else qflag = TT_EXACT;
-            _tt[ttk] = {0, _tt_store(sc), qflag, {}, false};
+            _tt_store_entry(ttk, 0, _tt_adjust_store(sc), qflag, Turn{}, false);
             return sc;
         }
 
@@ -1302,7 +1322,7 @@ private:
                 double sc = (_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply);
                 _ply--;
                 _undo_turn(steps, n);
-                _tt[ttk] = {depth, _tt_store(sc), TT_EXACT, wt, true};
+                _tt_store_entry(ttk, depth, _tt_adjust_store(sc), TT_EXACT, wt, true);
                 return sc;
             }
         }
@@ -1348,7 +1368,7 @@ private:
                         // Opponent has unblockable win — they win next turn
                         double sc = (opponent != _player)
                             ? (-WIN_SCORE + _ply + 1) : (WIN_SCORE - _ply - 1);
-                        _tt[ttk] = {depth, _tt_store(sc), TT_EXACT, {}, false};
+                        _tt_store_entry(ttk, depth, _tt_adjust_store(sc), TT_EXACT, Turn{}, false);
                         return sc;
                     }
                 }
@@ -1365,7 +1385,7 @@ private:
             if (cands.size() < 2) {
                 if (cands.empty()) {
                     double sc = _eval_score;
-                    _tt[ttk] = {depth, sc, TT_EXACT, {}, false};
+                    _tt_store_entry(ttk, depth, sc, TT_EXACT, Turn{}, false);
                     return sc;
                 }
                 turns = {{cands[0], cands[0]}};
@@ -1410,7 +1430,7 @@ private:
 
         if (turns.empty()) {
             double sc = _eval_score;
-            _tt[ttk] = {depth, sc, TT_EXACT, {}, false};
+            _tt_store_entry(ttk, depth, sc, TT_EXACT, Turn{}, false);
             return sc;
         }
 
@@ -1485,7 +1505,7 @@ private:
         if      (value <= orig_alpha) flag = TT_UPPER;
         else if (value >= orig_beta)  flag = TT_LOWER;
         else                          flag = TT_EXACT;
-        _tt[ttk] = {depth, _tt_store(value), flag, best_move, true};
+        _tt_store_entry(ttk, depth, _tt_adjust_store(value), flag, best_move, true);
         return value;
     }
 };
