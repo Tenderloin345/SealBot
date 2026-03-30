@@ -1458,6 +1458,7 @@ namespace opt
         std::pair<Turn, flat_map<Turn, double, TurnHash>>
         _search_root(std::vector<Turn> &turns, int depth, double alpha, double beta)
         {
+            _in_aspiration = true;
             bool maximizing = (_cur_player == _player);
             Turn best = turns[0];
 
@@ -1501,6 +1502,7 @@ namespace opt
         std::pair<Turn, flat_map<Turn, double, TurnHash>>
         _search_root_aspiration(std::vector<Turn> &turns, int depth)
         {
+            _in_aspiration = true;
             _check_time();
             double alpha = -INF_SCORE;
             double beta = INF_SCORE;
@@ -1509,7 +1511,7 @@ namespace opt
             double nwindow = window_increment;
             auto tt_it = _tt.find(_tt_key());
 
-            if (tt_it != _tt.end())
+            if (tt_it != _tt.end() && tt_it->second.flag == TT_EXACT && tt_it->second.depth >= depth)
             {
                 center = _tt_load(tt_it->second.score);
                 alpha = (center - nwindow);
