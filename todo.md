@@ -4,4 +4,4 @@
 - [ ] Genetic algorithm on line evals
 - [ ] Null move pruning
 - [ ] Aspiration windows
-- [ ] Whatever that PV thing is
+- [x] Whatever that PV thing is

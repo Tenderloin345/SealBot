@@ -57,7 +57,6 @@ static constexpr int    WIN_LENGTH         = 6;
 static constexpr double WIN_SCORE          = 100000000.0;
 static constexpr double WIN_THRESHOLD      = WIN_SCORE - 1000.0;  // mate-distance detection
 static constexpr double INF_SCORE          = std::numeric_limits<double>::infinity();
-static constexpr int    NMP_REDUCE         = 3;
 
 // Array dimensions -- covers coordinates [-70, 69] with padding for
 // windows (+/-5) and neighbor candidates (+/-2).
@@ -68,6 +67,11 @@ static constexpr int OFF = 70;
 static constexpr int8_t TT_EXACT = 0;
 static constexpr int8_t TT_LOWER = 1;
 static constexpr int8_t TT_UPPER = 2;
+
+// Node Type flags
+static constexpr int8_t PV_NODE = 0;
+static constexpr int8_t CUT_NODE = 1;
+static constexpr int8_t ALL_NODE = 2;
 
 // ═══════════════════════════════════════════════════════════════════════
 //  Coordinate packing  (still used for Coord values in vectors/turns)
@@ -1282,7 +1286,7 @@ private:
     // ────────────────────────────────────────────────────────────────
     //  Minimax
     // ────────────────────────────────────────────────────────────────
-    double _minimax(int depth, double alpha, double beta) {
+    double _minimax(int depth, double alpha, double beta, int node_type = PV_NODE) {
         _check_time();
 
         if (_game_over) {
@@ -1306,6 +1310,9 @@ private:
                 if (tte->flag == TT_UPPER) beta  = std::min(beta,  sc);
                 if (alpha >= beta) return sc;
             }
+        } else if (depth >= 6 && (node_type == PV_NODE)) { // Internal Iterative Deepening + Internal Iterative Reduction
+            _minimax(depth >> 1, alpha, beta); // Shallow search to populate TT with a move for move ordering
+            depth--; // Reduce depth under assumption that nodes without TT entries are likely less critical, to save time on deeper searches with many nodes
         }
 
         if (depth == 0) {
@@ -1465,28 +1472,34 @@ private:
         Turn best_move{};
         double value;
 
-        if (_eval_score >= beta && depth > NMP_REDUCE) { // Null Move Pruning (NMP)
-            _make_turn({0, 0}, nullptr); // Dummy turn
-            _ply++;
-            double cv = _game_over
-                ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
-                : _minimax(depth - 1 - NMP_REDUCE, beta - 1, beta);
-            _ply--;
-            _undo_turn(nullptr, 0); // Undo dummy turn
-            if (cv >= beta) {
-                return cv;
-            }
-        }
-
         if (maximizing) {
             value = -INF_SCORE;
+            int index = 0;
             for (const auto& turn : turns) {
                 UndoStep steps[2];
                 int n = _make_turn(turn, steps);
                 _ply++;
-                double cv = _game_over
+                double cv;
+                if (index == 0) { // First move — full window search
+                    cv = _game_over
                     ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
-                    : _minimax(depth - 1, alpha, beta);
+                    : _minimax(depth - 1, alpha, beta, PV_NODE);
+                } else {
+                    if (index > 4 && depth >= 3) { // Late Move Reduction - reduced depth for moves after the first few, to save time on less promising branches
+                        cv = _game_over
+                            ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
+                            : _minimax(depth - 3, alpha, beta, CUT_NODE); // Reduced-depth null-window search
+                    } else {
+                        cv = _game_over
+                            ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
+                            : _minimax(depth - 1, alpha, alpha + 1e-3, CUT_NODE); // Null-window search          
+                    }
+                    if (cv > alpha && cv < beta) {
+                        cv = _game_over
+                            ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
+                            : _minimax(depth - 1, alpha, beta, ALL_NODE); // Re-search with full window
+                    }    
+                }
                 _ply--;
                 _undo_turn(steps, n);
                 if (cv > value) { value = cv; best_move = turn; }
@@ -1497,16 +1510,36 @@ private:
                     _store_killer(_ply, turn);
                     break;
                 }
+                index++;
             }
         } else {
             value = INF_SCORE;
+            int index = 0;
             for (const auto& turn : turns) {
                 UndoStep steps[2];
                 int n = _make_turn(turn, steps);
                 _ply++;
-                double cv = _game_over
+                double cv;
+                if (index == 0) { // First move — full window search
+                    cv = _game_over
                     ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
-                    : _minimax(depth - 1, alpha, beta);
+                    : _minimax(depth - 1, alpha, beta, PV_NODE);
+                } else {
+                    if (index > 4 && depth >= 3) { // Late Move Reduction - reduced depth for moves after the first few, to save time on less promising branches
+                        cv = _game_over
+                            ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
+                            : _minimax(depth - 3, alpha, beta, CUT_NODE); // Reduced-depth null-window search
+                    } else {
+                    cv = _game_over
+                        ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
+                        : _minimax(depth - 1, beta - 1e-3, beta, CUT_NODE); // Null-window search          
+                    }
+                    if (cv > alpha && cv < beta) {
+                        cv = _game_over
+                            ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
+                            : _minimax(depth - 1, alpha, beta, ALL_NODE); // Re-search with full window
+                    }    
+                }
                 _ply--;
                 _undo_turn(steps, n);
                 if (cv < value) { value = cv; best_move = turn; }
@@ -1517,6 +1550,7 @@ private:
                     _store_killer(_ply, turn);
                     break;
                 }
+                index++;
             }
         }
 
