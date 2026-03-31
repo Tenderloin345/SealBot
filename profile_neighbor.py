@@ -78,14 +78,12 @@ def build_variant(dist):
         shutil.rmtree(build_dir)
     os.makedirs(build_dir)
 
-    # Copy all source files
-    for f in os.listdir(CURRENT_DIR):
-        src = os.path.join(CURRENT_DIR, f)
-        if os.path.isfile(src):
-            shutil.copy2(src, build_dir)
+    # Copy all source files (including subdirectories)
+    shutil.copytree(CURRENT_DIR, build_dir, dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns('build', '*.so', '*.pyd', '*.egg-info'))
 
-    # Patch NEIGHBOR_DIST in engine.h
-    engine_path = os.path.join(build_dir, "engine.h")
+    # Patch NEIGHBOR_DIST in engine/constants.h
+    engine_path = os.path.join(build_dir, "engine", "constants.h")
     with open(engine_path) as fh:
         code = fh.read()
     code = code.replace(

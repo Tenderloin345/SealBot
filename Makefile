@@ -25,7 +25,10 @@ evaluate: build ## Run evaluation (current vs best)
 	$(CURDIR)/.venv/bin/python evaluate.py -n $(or $(N),20) -t $(or $(T),0.1)
 
 promote: ## Copy current/ engine files to best/
-	@for f in engine.h minimax_bot.cpp types.h pattern_data.h ankerl_unordered_dense.h setup.py; do \
+	@rm -rf best/engine best/vendor
+	@cp -r current/engine best/engine
+	@cp -r current/vendor best/vendor
+	@for f in minimax_bot.cpp types.h pattern_data.h setup.py; do \
 		cp current/$$f best/$$f; \
 	done
 	@echo "Copied current -> best. Run 'make rebuild' to compile."
