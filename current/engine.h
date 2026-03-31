@@ -1312,7 +1312,6 @@ private:
             }
         } else if (depth >= 6 && (node_type == PV_NODE)) { // Internal Iterative Deepening + Internal Iterative Reduction
             _minimax(depth >> 1, alpha, beta); // Shallow search to populate TT with a move for move ordering
-            depth--; // Reduce depth under assumption that nodes without TT entries are likely less critical, to save time on deeper searches with many nodes
         }
 
         if (depth == 0) {
@@ -1472,6 +1471,9 @@ private:
         Turn best_move{};
         double value;
 
+        int new_node_type = node_type == CUT_NODE ? ALL_NODE : CUT_NODE;
+        
+
         if (maximizing) {
             value = -INF_SCORE;
             int index = 0;
@@ -1480,25 +1482,31 @@ private:
                 int n = _make_turn(turn, steps);
                 _ply++;
                 double cv;
-                if (index == 0) { // First move — full window search
-                    cv = _game_over
-                    ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
-                    : _minimax(depth - 1, alpha, beta, PV_NODE);
-                } else {
-                    if (index > 4 && depth >= 3) { // Late Move Reduction - reduced depth for moves after the first few, to save time on less promising branches
+                if (node_type == PV_NODE) {
+                    if (index == 0) { // First move — full window search
                         cv = _game_over
-                            ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
-                            : _minimax(depth - 3, alpha, beta, CUT_NODE); // Reduced-depth null-window search
+                        ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
+                        : _minimax(depth - 1, alpha, beta, PV_NODE);
                     } else {
-                        cv = _game_over
-                            ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
-                            : _minimax(depth - 1, alpha, alpha + 1e-3, CUT_NODE); // Null-window search          
-                    }
-                    if (cv > alpha && cv < beta) {
-                        cv = _game_over
-                            ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
-                            : _minimax(depth - 1, alpha, beta, ALL_NODE); // Re-search with full window
+                        if (index > 4 && depth > 3) { // Late Move Reduction - reduced depth for later moves to save time on less promising branches
+                            cv = _game_over
+                                ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
+                                : _minimax(depth - (depth == 4 ? 3 : 2), alpha, alpha + 1e-3, CUT_NODE); // Reduced-depth null-window search
+                        } else {
+                            cv = _game_over
+                                ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
+                                : _minimax(depth - 1, alpha, alpha + 1e-3, CUT_NODE); // Null-window search          
+                        }
+                        if (cv > alpha && cv < beta) {
+                            cv = _game_over
+                                ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
+                                : _minimax(depth - 1, alpha, beta, PV_NODE); // Re-search with full window
+                        }    
                     }    
+                } else {
+                    cv = _game_over
+                        ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
+                        : _minimax(depth - 1, alpha, beta, new_node_type);
                 }
                 _ply--;
                 _undo_turn(steps, n);
@@ -1520,25 +1528,31 @@ private:
                 int n = _make_turn(turn, steps);
                 _ply++;
                 double cv;
-                if (index == 0) { // First move — full window search
-                    cv = _game_over
-                    ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
-                    : _minimax(depth - 1, alpha, beta, PV_NODE);
-                } else {
-                    if (index > 4 && depth >= 3) { // Late Move Reduction - reduced depth for moves after the first few, to save time on less promising branches
+                if (node_type == PV_NODE) {
+                    if (index == 0) { // First move — full window search
+                        cv = _game_over
+                        ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
+                        : _minimax(depth - 1, alpha, beta, PV_NODE);
+                    } else {
+                        if (index > 4 && depth > 3) { // Late Move Reduction - reduced depth for later moves to save time on less promising branches
+                            cv = _game_over
+                                ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
+                                : _minimax(depth - (depth == 4 ? 3 : 2), beta - 1e-3, beta, ALL_NODE); // Reduced-depth null-window search
+                        } else {
                         cv = _game_over
                             ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
-                            : _minimax(depth - 3, alpha, beta, CUT_NODE); // Reduced-depth null-window search
-                    } else {
+                            : _minimax(depth - 1, beta - 1e-3, beta, ALL_NODE); // Null-window search          
+                        }
+                        if (cv > alpha && cv < beta) {
+                            cv = _game_over
+                                ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
+                                : _minimax(depth - 1, alpha, beta, PV_NODE); // Re-search with full window
+                        }    
+                    }
+                } else { 
                     cv = _game_over
                         ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
-                        : _minimax(depth - 1, beta - 1e-3, beta, CUT_NODE); // Null-window search          
-                    }
-                    if (cv > alpha && cv < beta) {
-                        cv = _game_over
-                            ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
-                            : _minimax(depth - 1, alpha, beta, ALL_NODE); // Re-search with full window
-                    }    
+                        : _minimax(depth - 1, alpha, beta, new_node_type);
                 }
                 _ply--;
                 _undo_turn(steps, n);
