@@ -235,7 +235,7 @@ private:
     double _quiescence(double alpha, double beta, int qdepth);
     std::pair<Turn, flat_map<Turn, double, TurnHash>>
         _search_root(std::vector<Turn>& turns, int depth);
-    double _minimax(int depth, double alpha, double beta);
+    double _minimax(int depth, double alpha, double beta, int node_type = PV_NODE);
 };
 
 } // namespace opt

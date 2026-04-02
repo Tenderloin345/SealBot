@@ -61,3 +61,8 @@ static constexpr int OFF = 70;
 static constexpr int8_t TT_EXACT = 0;
 static constexpr int8_t TT_LOWER = 1;
 static constexpr int8_t TT_UPPER = 2;
+
+// Node Type flags
+static constexpr int8_t PV_NODE   = 0;
+static constexpr int8_t CUT_NODE  = 1;
+static constexpr int8_t ALL_NODE  = 2;

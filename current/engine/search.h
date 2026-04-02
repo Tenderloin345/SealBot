@@ -439,7 +439,7 @@ MinimaxBot::_search_root(std::vector<Turn>& turns, int depth) {
 // ────────────────────────────────────────────────────────────────
 //  Minimax
 // ────────────────────────────────────────────────────────────────
-inline double MinimaxBot::_minimax(int depth, double alpha, double beta) {
+inline double MinimaxBot::_minimax(int depth, double alpha, double beta, int node_type) {
     _check_time();
 
     if (_game_over) {
@@ -622,15 +622,29 @@ inline double MinimaxBot::_minimax(int depth, double alpha, double beta) {
     Turn best_move{};
     double value;
 
+    int new_node = node_type == CUT_NODE ? ALL_NODE : CUT_NODE;
     if (maximizing) {
         value = -INF_SCORE;
+        int index = 0;
         for (const auto& turn : turns) {
             UndoStep steps[2];
             int n = _make_turn(turn, steps);
             _ply++;
-            double cv = _game_over
-                ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
-                : _minimax(depth - 1, alpha, beta);
+            double cv;
+            if (_game_over) {
+                cv = (_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply);
+            } else if (node_type != PV_NODE) {
+                cv = _minimax(depth - 1, alpha, beta, new_node);
+            } else {
+                if (index == 0) { // First move — full window search
+                    cv = _minimax(depth - 1, alpha, beta, PV_NODE);
+                } else { // Subsequent moves — null window search
+                    cv = _minimax(depth - 1, alpha, alpha + 1e-3, CUT_NODE);
+                    if (alpha < cv && cv < beta) {
+                        cv = _minimax(depth - 1, alpha, beta, PV_NODE);
+                    }
+                }
+            }
             _ply--;
             _undo_turn(steps, n);
             if (cv > value) { value = cv; best_move = turn; }
@@ -641,16 +655,31 @@ inline double MinimaxBot::_minimax(int depth, double alpha, double beta) {
                 _store_killer(_ply, turn);
                 break;
             }
+            index++;
         }
     } else {
         value = INF_SCORE;
+        int index = 0;
         for (const auto& turn : turns) {
             UndoStep steps[2];
             int n = _make_turn(turn, steps);
             _ply++;
-            double cv = _game_over
-                ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
-                : _minimax(depth - 1, alpha, beta);
+            double cv;
+            if (_game_over) {
+                cv = (_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply);
+            } else if (node_type != PV_NODE) {
+                cv = _minimax(depth - 1, alpha, beta, new_node);
+            } else {
+                if (index == 0) { // First move — full window search
+                    cv = _minimax(depth - 1, alpha, beta, PV_NODE);
+                } else { // Subsequent moves — null window search
+                    cv = _minimax(depth - 1, beta - 1e-3, beta, CUT_NODE);
+                    if (alpha < cv && cv < beta) {
+                        cv = _minimax(depth - 1, alpha, beta, PV_NODE);
+                    }
+                }
+                index++;
+            }
             _ply--;
             _undo_turn(steps, n);
             if (cv < value) { value = cv; best_move = turn; }
