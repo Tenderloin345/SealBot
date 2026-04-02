@@ -35,3 +35,9 @@ struct EngineState {
     int                 eval_length;
     std::string         pattern_path_str;
 };
+
+// Single step of the principal variation (for PV extraction).
+struct PVStep {
+    int8_t player;
+    std::vector<std::pair<int,int>> moves;  // (q, r) cells
+};

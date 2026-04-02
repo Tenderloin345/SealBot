@@ -7,7 +7,7 @@
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
-#include "engine.h"
+#include "engine/engine.h"
 #include "pattern_data.h"
 
 namespace py = pybind11;

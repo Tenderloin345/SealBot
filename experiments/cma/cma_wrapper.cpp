@@ -1,13 +1,13 @@
 /*
  * cma_wrapper.cpp -- pybind11 wrapper with load_patterns() exposed for CMA-ES.
  *
- * Reuses engine.h from best/ (resolved via include_dirs in setup.py).
+ * Reuses engine from best/ (resolved via include_dirs in setup.py).
  * Module name is cma_minimax_cpp so it can coexist with best/minimax_cpp.
  */
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
-#include "engine.h"
+#include "engine/engine.h"
 #include "pattern_data.h"
 
 namespace py = pybind11;
